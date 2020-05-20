@@ -8,7 +8,8 @@ This is the same filter as the one from MaskTools-v1.5.8 with few changes:
 - chroma could be filtered;
 - Y/YUV 8-bit clips are accepted;
 - support for v8 interface;
-- removed MMX asm code.
+- removed MMX asm code;
+- registered as MT_NICE_FILTER.
 
 # Usage
 
