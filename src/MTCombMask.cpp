@@ -69,17 +69,6 @@ static void CM_C(const uint8_t* srcp, uint8_t* derp, int src_pitch,
 	}
 }
 
-static void MemZoneSet(uint8_t* ptr, uint8_t value, int width,
-	int height, int offsetX, int offsetY, int pitch)
-{
-	ptr += offsetX + static_cast<int64_t>(offsetY) * pitch;
-	for (int y = offsetY; y < height + offsetY; y++)
-	{
-		memset(ptr, value, width);
-		ptr += pitch;
-	}
-}
-
 static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnvironment* env) {
 	const uint8_t* srcp = src->GetReadPtr(plane);
 	int src_pitch = src->GetPitch(plane);
@@ -92,12 +81,11 @@ static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnv
 
 class CombMask : public GenericVideoFilter
 {
-	int				Yth1, Yth2;
-	int				Y, U, V;
+	int Yth1, Yth2;
+	int Y, U, V;
 	bool has_at_least_v8;
 
 	void (*CM) (const uint8_t*, uint8_t*, int, int, int, int, const uint8_t, const uint8_t);
-	void (*MemZoneS)(uint8_t*, uint8_t, int, int, int, int, int);
 
 public:
 	CombMask(PClip _child, unsigned int thY1, unsigned int thY2,
@@ -108,24 +96,24 @@ public:
 		try { env->CheckVersion(8); }
 		catch (const AvisynthError&) { has_at_least_v8 = false; }
 
-		if (Y > 3 || Y < -255)
+		if ((vi.IsRGB() && vi.BitsPerComponent() == 8) || vi.BitsPerComponent() != 8)
 		{
-			env->ThrowError("CombMask: Unvalid operation mode on Y");
+			env->ThrowError("CombMask: clip must be Y/YUV 8-bit format.");
 		}
 
-		if (U > 3 || U < -255)
+		if (Y > 3 || Y < 1)
 		{
-			env->ThrowError("CombMask: Unvalid operation mode on U");
+			env->ThrowError("CombMask: y must be between 1..3");
 		}
 
-		if (V > 3 || V < -255)
+		if (U > 3 || U < 1)
 		{
-			env->ThrowError("CombMask: Unvalid operation mode on V");
+			env->ThrowError("CombMask: u must be between 1..3");
 		}
 
-		if (!vi.IsYV12())
+		if (V > 3 || V < 1)
 		{
-			env->ThrowError("CombMask: Needs YV12 data");
+			env->ThrowError("CombMask: v must be between 1..3");
 		}
 
 		if (thY1 > 255 || thY1 < 0)
@@ -144,7 +132,6 @@ public:
 		}
 
 		CM = CM_C;
-		MemZoneS = MemZoneSet;
 	}
 
 	PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env)
@@ -181,10 +168,6 @@ public:
 				{
 					copy_plane(der, src, plane, env);
 				}
-				else if (Y < 1)
-				{
-					MemZoneS(derp, -Y, width, height, 0, 0, der_pitch);
-				}
 			}
 
 			else if (plane == 2)
@@ -197,13 +180,9 @@ public:
 				{
 					copy_plane(der, src, plane, env);
 				}
-				else if (U < 1)
-				{
-					MemZoneS(derp, -U, width, height, 0, 0, der_pitch);
-				}
 			}
 
-			else if (plane == 3)
+			else
 			{
 				if (V == 3)
 				{
@@ -212,10 +191,6 @@ public:
 				else if (V == 2)
 				{
 					copy_plane(der, src, plane, env);
-				}
-				else if (V < 1)
-				{
-					MemZoneS(derp, -V, width, height, 0, 0, der_pitch);
 				}
 			}
 		}
@@ -249,7 +224,7 @@ const char* __stdcall AvisynthPluginInit3(IScriptEnvironment * env, const AVS_Li
 {
 	AVS_linkage = vectors;
 
-	env->AddFunction("CombMask", "c[thY1]i[thY2]i[Y]i[U]i[V]i[usemmx]b", Create_CombMask, 0);
+	env->AddFunction("CombMask", "c[thY1]i[thY2]i[y]i[u]i[v]i[usemmx]b", Create_CombMask, 0);
 
 	return "CombMask";
 }
