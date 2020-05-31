@@ -6,7 +6,7 @@ The thresholds work as following: after calculating the combing value, if one is
 
 This is the same filter as the one from MaskTools-v1.5.8 with few changes:
 - chroma could be filtered;
-- Y/YUV 8-bit clips are accepted;
+- Y/YUV(A) 8..16-bit clips are accepted;
 - support for v8 interface;
 - removed MMX asm code;
 - registered as MT_NICE_FILTER.

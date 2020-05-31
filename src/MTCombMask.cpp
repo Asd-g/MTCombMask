@@ -19,15 +19,47 @@
 #include <memory.h>
 
 #include "avisynth.h"
+#include "avs/minmax.h"
 
-static void CM_C(const uint8_t* srcp, uint8_t* derp, int src_pitch,
-	int der_pitch, int row_size, int height,
-	uint8_t thresinf, const uint8_t thressup)
+class CombMask : public GenericVideoFilter
 {
-	const uint8_t* s = srcp + src_pitch;
-	const uint8_t* su = srcp;
-	const uint8_t* sd = srcp + static_cast<int64_t>(2) * src_pitch;
-	uint8_t* d = derp;
+	int Yth1, Yth2;
+	int Y, U, V;
+	int proccesplanes[3];
+	bool has_at_least_v8;
+
+	void (*CM)(PVideoFrame&, PVideoFrame&, const int, const int, const int, int, int, IScriptEnvironment*);
+
+public:
+	CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, bool usemmx, IScriptEnvironment* env);
+	PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env);
+	int __stdcall SetCacheHints(int cachehints, int frame_range)
+	{
+		return cachehints == CACHE_GET_MTMODE ? MT_MULTI_INSTANCE : 0;
+	}
+};
+
+template <typename T>
+static void CM_C(PVideoFrame& der, PVideoFrame& src, const int plane, const int bits, const int component, int thresinf, int thressup, IScriptEnvironment* env) noexcept
+{
+	int src_pitch = src->GetPitch(plane);
+	int height = src->GetHeight(plane);
+	int row_size = src->GetRowSize(plane) / component;
+	const T* srcp = reinterpret_cast<const T*>(src->GetReadPtr(plane));
+
+	int der_pitch = der->GetPitch(plane);
+	T* derp = reinterpret_cast<T*>(der->GetWritePtr(plane));
+
+	src_pitch /= sizeof(T);
+	der_pitch /= sizeof(T);
+
+	thresinf <<= bits - 8;
+	thressup <<= bits - 8;
+
+	const T* s = srcp + src_pitch;
+	const T* su = srcp;
+	const T* sd = srcp + static_cast<int64_t>(2) * src_pitch;
+	T* d = derp;
 	int smod = src_pitch - row_size;
 	int dmod = der_pitch - row_size;
 	int x, y;
@@ -47,9 +79,10 @@ static void CM_C(const uint8_t* srcp, uint8_t* derp, int src_pitch,
 		for (x = 0; x < row_size - 0; x++)
 		{
 			prod = (((*(su)-(*s))) * ((*(sd)-(*s))));
+			prod >>= bits - 8;
 
 			if (prod < thresinf) *d = 0;
-			else if (prod > thressup) *d = 255;
+			else if (prod > thressup) *d = (1 << bits) - 1;
 			else *d = (prod >> 8);
 			s++;
 			su++;
@@ -69,7 +102,8 @@ static void CM_C(const uint8_t* srcp, uint8_t* derp, int src_pitch,
 	}
 }
 
-static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnvironment* env) {
+static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnvironment* env)
+{
 	const uint8_t* srcp = src->GetReadPtr(plane);
 	int src_pitch = src->GetPitch(plane);
 	int height = src->GetHeight(plane);
@@ -79,130 +113,95 @@ static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnv
 	env->BitBlt(destp, dst_pitch, srcp, src_pitch, row_size, height);
 }
 
-class CombMask : public GenericVideoFilter
+CombMask::CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, bool usemmx, IScriptEnvironment* env) :
+	GenericVideoFilter(_child), Yth1(thY1), Yth2(thY2), Y(y), U(u), V(v)
 {
-	int Yth1, Yth2;
-	int Y, U, V;
-	bool has_at_least_v8;
+	has_at_least_v8 = true;
+	try { env->CheckVersion(8); }
+	catch (const AvisynthError&) { has_at_least_v8 = false; }
 
-	void (*CM) (const uint8_t*, uint8_t*, int, int, int, int, const uint8_t, const uint8_t);
+	if ((vi.IsRGB() && vi.BitsPerComponent() != 32) || vi.BitsPerComponent() == 32)
+		env->ThrowError("CombMask: clip must be Y/YUV(A) 8..16-bit format.");
 
-public:
-	CombMask(PClip _child, unsigned int thY1, unsigned int thY2,
-		int y, int u, int v, bool usemmx, IScriptEnvironment* env) :
-		GenericVideoFilter(_child), Yth1(thY1), Yth2(thY2), Y(y), U(u), V(v)
+	if (Y > 3 || Y < 1)
+		env->ThrowError("CombMask: y must be between 1..3.");
+
+	if (U > 3 || U < 1)
+		env->ThrowError("CombMask: u must be between 1..3.");
+
+	if (V > 3 || V < 1)
+		env->ThrowError("CombMask: v must be between 1..3.");
+
+	if (thY1 > 255 || thY1 < 0)
+		env->ThrowError("CombMask: first luma threshold not in the range 0..255.");
+
+	if (thY2 > 255 || thY2 < 0)
+		env->ThrowError("CombMask: second luma threshold not in the range 0..255.");
+
+	if (thY1 > thY2)
+		env->ThrowError("CombMask: the first threshold should not be superior to the second one.");
+
+	int planecount = min(vi.NumComponents(), 3);
+	for (int i = 0; i < planecount; i++)
 	{
-		has_at_least_v8 = true;
-		try { env->CheckVersion(8); }
-		catch (const AvisynthError&) { has_at_least_v8 = false; }
-
-		if ((vi.IsRGB() && vi.BitsPerComponent() == 8) || vi.BitsPerComponent() != 8)
+		if (i == 0)
 		{
-			env->ThrowError("CombMask: clip must be Y/YUV 8-bit format.");
-		}
-
-		if (Y > 3 || Y < 1)
-		{
-			env->ThrowError("CombMask: y must be between 1..3");
-		}
-
-		if (U > 3 || U < 1)
-		{
-			env->ThrowError("CombMask: u must be between 1..3");
-		}
-
-		if (V > 3 || V < 1)
-		{
-			env->ThrowError("CombMask: v must be between 1..3");
-		}
-
-		if (thY1 > 255 || thY1 < 0)
-		{
-			env->ThrowError("CombMask: first luma threshold not in the range 0..255");
-		}
-
-		if (thY2 > 255 || thY2 < 0)
-		{
-			env->ThrowError("CombMask: second luma threshold not in the range 0..255");
-		}
-
-		if (thY1 > thY2)
-		{
-			env->ThrowError("CombMask: the first luma threshold should not be superior to the second one");
-		}
-
-		CM = CM_C;
-	}
-
-	PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env)
-	{
-		PVideoFrame	src = child->GetFrame(n, env);
-		PVideoFrame	der;
-		if (has_at_least_v8) der = env->NewVideoFrameP(vi, &src); else der = env->NewVideoFrame(vi);
-
-		int src_pitch, der_pitch, width, height;
-		const uint8_t* srcp;
-		uint8_t* derp;
-
-		int planes_y[3] = { PLANAR_Y, PLANAR_U, PLANAR_V };
-		for (int i = 0; i < 3; i++)
-		{
-			const int plane = planes_y[i];
-
-			src_pitch = src->GetPitch(plane);
-			src_pitch = src->GetPitch(plane);
-			height = src->GetHeight(plane);
-			width = src->GetRowSize(plane);
-			srcp = src->GetReadPtr(plane);
-
-			der_pitch = der->GetPitch(plane);
-			derp = der->GetWritePtr(plane);
-
-			if (plane == 1)
-			{
-				if (Y == 3)
-				{
-					CM(srcp, derp, src_pitch, der_pitch, width, height, Yth1, Yth2);
-				}
-				else if (Y == 2)
-				{
-					copy_plane(der, src, plane, env);
-				}
-			}
-
-			else if (plane == 2)
-			{
-				if (U == 3)
-				{
-					CM(srcp, derp, src_pitch, der_pitch, width, height, Yth1, Yth2);
-				}
-				else if (U == 2)
-				{
-					copy_plane(der, src, plane, env);
-				}
-			}
-
+			if (Y == 3)
+				proccesplanes[i] = 3;
+			else if (Y == 2)
+				proccesplanes[i] = 2;
 			else
-			{
-				if (V == 3)
-				{
-					CM(srcp, derp, src_pitch, der_pitch, width, height, Yth1, Yth2);
-				}
-				else if (V == 2)
-				{
-					copy_plane(der, src, plane, env);
-				}
-			}
+				proccesplanes[i] = 1;
 		}
-
-		return der;
+		else if (i == 1)
+		{
+			if (U == 3)
+				proccesplanes[i] = 3;
+			else if (U == 2)
+				proccesplanes[i] = 2;
+			else
+				proccesplanes[i] = 1;
+		}
+		else
+		{
+			if (V == 3)
+				proccesplanes[i] = 3;
+			else if (V == 2)
+				proccesplanes[i] = 2;
+			else
+				proccesplanes[i] = 1;
+		}
 	}
 
-	int __stdcall SetCacheHints(int cachehints, int frame_range)
+	if (vi.BitsPerComponent() == 8)
+		CM = CM_C<uint8_t>;
+	else
+		CM = CM_C<uint16_t>;
+}
+
+PVideoFrame CombMask::GetFrame(int n, IScriptEnvironment* env)
+{
+	PVideoFrame	src = child->GetFrame(n, env);
+	PVideoFrame	der;
+	if (has_at_least_v8) der = env->NewVideoFrameP(vi, &src); else der = env->NewVideoFrame(vi);
+	int bits = vi.BitsPerComponent();
+	int component = vi.ComponentSize();
+
+	int planes_y[4] = { PLANAR_Y, PLANAR_U, PLANAR_V, PLANAR_A};
+	const int* current_planes = planes_y;
+	int planecount = min(vi.NumComponents(), 3);
+	for (int i = 0; i < planecount; i++)
 	{
-		return cachehints == CACHE_GET_MTMODE ? MT_NICE_FILTER : 0;
+		const int plane = current_planes[i];
+
+		if (proccesplanes[i] == 3)
+			CM(der, src, plane, bits, component,  Yth1, Yth2, env);
+		else if (proccesplanes[i] == 2)
+			copy_plane(der, src, plane, env);
 	}
-};
+
+	return der;
+}
 
 AVSValue __cdecl Create_CombMask(AVSValue args, void* user_data, IScriptEnvironment* env)
 {
