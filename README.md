@@ -20,7 +20,7 @@ CombMask(clip, int "thY1", int "thY2", int "y", int "u", int "v", bool "usemmx")
 ## Parameters:
 
 - clip\
-    A clip to process. It must have constant format and it must be Y/YUV 8-bit.
+    A clip to process. It must have constant format and it must be Y/YUV(A) 8..16-bit.
     
 - thY1\
     Pixels below thY1 are set to 0.\
