@@ -27,101 +27,169 @@ class CombMask : public GenericVideoFilter
 	int Y, U, V;
 	int proccesplanes[3];
 	bool has_at_least_v8;
+	int peak;
 
-	void (*CM)(PVideoFrame&, PVideoFrame&, const int, const int, const int, int, int, IScriptEnvironment*);
+	void (*CM)(uint8_t*, const uint8_t*, int, int, const int, int, int, int, const int, const int, IScriptEnvironment*);
 
 public:
-	CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, bool usemmx, IScriptEnvironment* env);
+	CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, IScriptEnvironment* env);
 	PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env);
 	int __stdcall SetCacheHints(int cachehints, int frame_range)
 	{
-		return cachehints == CACHE_GET_MTMODE ? MT_MULTI_INSTANCE : 0;
+		return cachehints == CACHE_GET_MTMODE ? MT_NICE_FILTER : 0;
 	}
 };
 
 template <typename T>
-static void CM_C(PVideoFrame& der, PVideoFrame& src, const int plane, const int bits, const int component, int thresinf, int thressup, IScriptEnvironment* env) noexcept
+static void CM_C(uint8_t* dstp_, const uint8_t* srcp_, int dst_pitch, int src_pitch, const int height, int width, int thresinf, int thressup, const int peak, const int bits, IScriptEnvironment* env) noexcept
 {
-	int src_pitch = src->GetPitch(plane);
-	int height = src->GetHeight(plane);
-	int row_size = src->GetRowSize(plane) / component;
-	const T* srcp = reinterpret_cast<const T*>(src->GetReadPtr(plane));
-
-	int der_pitch = der->GetPitch(plane);
-	T* derp = reinterpret_cast<T*>(der->GetWritePtr(plane));
-
+	dst_pitch /= sizeof(T);
 	src_pitch /= sizeof(T);
-	der_pitch /= sizeof(T);
+	width /= sizeof(T);
+	const T* su = reinterpret_cast<const T*>(srcp_);
+	T* d = reinterpret_cast<T*>(dstp_);
 
-	thresinf <<= bits - 8;
-	thressup <<= bits - 8;
+	const T* s = su + src_pitch;
+	const T* sd = su + static_cast<int64_t>(2) * src_pitch;
+	int smod = src_pitch - width;
+	int dmod = dst_pitch - width;
 
-	const T* s = srcp + src_pitch;
-	const T* su = srcp;
-	const T* sd = srcp + static_cast<int64_t>(2) * src_pitch;
-	T* d = derp;
-	int smod = src_pitch - row_size;
-	int dmod = der_pitch - row_size;
-	int x, y;
-
-	int prod;
-
-	for (x = 0; x < row_size - 0; x++)
+	if constexpr (std::is_same_v<T, uint8_t>)
 	{
-		*d = 0;
-		d++;
-	}
-
-	d += dmod;
-
-	for (y = 1; y < height - 1; y++)
-	{
-		for (x = 0; x < row_size - 0; x++)
+		for (int x = 0; x < width; ++x)
 		{
-			prod = (((*(su)-(*s))) * ((*(sd)-(*s))));
-			prod >>= bits - 8;
-
-			if (prod < thresinf) *d = 0;
-			else if (prod > thressup) *d = (1 << bits) - 1;
-			else *d = (prod >> 8);
-			s++;
-			su++;
-			sd++;
-			d++;
+			*d = 0;
+			++d;
 		}
+
 		d += dmod;
-		s += smod;
-		su += smod;
-		sd += smod;
-	}
 
-	for (x = 0; x < row_size - 0; x++)
+		for (int y = 1; y < height - 1; ++y)
+		{
+			for (int x = 0; x < width; ++x)
+			{
+				int prod = (((*(su)-(*s))) * ((*(sd)-(*s))));
+
+				if (prod < thresinf)
+					*d = 0;
+				else if (prod > thressup)
+					*d = 255;
+				else
+					*d = prod >> 8;
+
+				++s;
+				++su;
+				++sd;
+				++d;
+			}
+
+			d += dmod;
+			s += smod;
+			su += smod;
+			sd += smod;
+		}
+
+		for (int x = 0; x < width; ++x)
+		{
+			*d = 0;
+			++d;
+		}
+	}
+	else if constexpr (std::is_same_v<T, uint16_t>)
 	{
-		*d = 0;
-		d++;
+		for (int x = 0; x < width; ++x)
+		{
+			*d = 0;
+			++d;
+		}
+
+		d += dmod;
+
+		for (int y = 1; y < height - 1; ++y)
+		{
+			for (int x = 0; x < width; ++x)
+			{
+				int prod = (((*(su)-(*s))) * ((*(sd)-(*s)))) >> (bits - 8);
+
+				if (prod < thresinf)
+					*d = 0;
+				else if (prod > thressup)
+					*d = peak;
+				else
+					*d = prod >> 8;
+
+				++s;
+				++su;
+				++sd;
+				++d;
+			}
+
+			d += dmod;
+			s += smod;
+			su += smod;
+			sd += smod;
+		}
+
+		for (int x = 0; x < width; ++x)
+		{
+			*d = 0;
+			++d;
+		}
+	}
+	else
+	{
+		float threshinf_ = thresinf / 255.f;
+		float thressup_ = thressup / 255.f;
+
+		for (int x = 0; x < width; ++x)
+		{
+			*d = 0;
+			++d;
+		}
+
+		d += dmod;
+
+		for (int y = 1; y < height - 1; ++y)
+		{
+			for (int x = 0; x < width; ++x)
+			{
+				float prod = (((*(su)-(*s))) * ((*(sd)-(*s)))) * 255.f;
+
+				if (prod < threshinf_)
+					*d = 0.f;
+				else if (prod > thressup_)
+					*d = 1.f;
+				else
+					*d = prod / 255.f;
+				++s;
+				++su;
+				++sd;
+				++d;
+			}
+
+			d += dmod;
+			s += smod;
+			su += smod;
+			sd += smod;
+		}
+
+		for (int x = 0; x < width; ++x)
+		{
+			*d = 0;
+			++d;
+		}
 	}
 }
 
-static void copy_plane(PVideoFrame& dst, PVideoFrame& src, int plane, IScriptEnvironment* env)
-{
-	const uint8_t* srcp = src->GetReadPtr(plane);
-	int src_pitch = src->GetPitch(plane);
-	int height = src->GetHeight(plane);
-	int row_size = src->GetRowSize(plane);
-	uint8_t* destp = dst->GetWritePtr(plane);
-	int dst_pitch = dst->GetPitch(plane);
-	env->BitBlt(destp, dst_pitch, srcp, src_pitch, row_size, height);
-}
-
-CombMask::CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, bool usemmx, IScriptEnvironment* env) :
+CombMask::CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, IScriptEnvironment* env) :
 	GenericVideoFilter(_child), Yth1(thY1), Yth2(thY2), Y(y), U(u), V(v)
 {
 	has_at_least_v8 = true;
 	try { env->CheckVersion(8); }
 	catch (const AvisynthError&) { has_at_least_v8 = false; }
 
-	if ((vi.IsRGB() && vi.BitsPerComponent() != 32) || vi.BitsPerComponent() == 32)
-		env->ThrowError("CombMask: clip must be Y/YUV(A) 8..16-bit format.");
+	if (vi.IsRGB() || !vi.IsPlanar())
+		env->ThrowError("CombMask: clip must be in YUV planar format.");
 
 	if (Y > 3 || Y < 1)
 		env->ThrowError("CombMask: y must be between 1..3.");
@@ -141,66 +209,61 @@ CombMask::CombMask(PClip _child, int thY1, int thY2, int y, int u, int v, bool u
 	if (thY1 > thY2)
 		env->ThrowError("CombMask: the first threshold should not be superior to the second one.");
 
+	const int planes[3] = { y, u, v };
 	int planecount = min(vi.NumComponents(), 3);
-	for (int i = 0; i < planecount; i++)
+	for (int i = 0; i < planecount; ++i)
 	{
-		if (i == 0)
+		switch (planes[i])
 		{
-			if (Y == 3)
-				proccesplanes[i] = 3;
-			else if (Y == 2)
-				proccesplanes[i] = 2;
-			else
-				proccesplanes[i] = 1;
-		}
-		else if (i == 1)
-		{
-			if (U == 3)
-				proccesplanes[i] = 3;
-			else if (U == 2)
-				proccesplanes[i] = 2;
-			else
-				proccesplanes[i] = 1;
-		}
-		else
-		{
-			if (V == 3)
-				proccesplanes[i] = 3;
-			else if (V == 2)
-				proccesplanes[i] = 2;
-			else
-				proccesplanes[i] = 1;
+			case 3: proccesplanes[i] = 3; break;
+			case 2: proccesplanes[i] = 2; break;
+			default: proccesplanes[i] = 1; break;
 		}
 	}
 
-	if (vi.BitsPerComponent() == 8)
-		CM = CM_C<uint8_t>;
-	else
-		CM = CM_C<uint16_t>;
+	switch (vi.ComponentSize())
+	{
+		case 1:	CM = CM_C<uint8_t>; break;
+		case 2: CM = CM_C<uint16_t>; break;
+		default: CM = CM_C<float>; break;
+	}
+
+	peak = (1 << vi.BitsPerComponent()) - 1;
+	const int scale = peak / 255;
+
+	if (vi.ComponentSize() == 2)
+	{
+		Yth1 *= scale;
+		Yth2 *= scale;
+	}
 }
 
 PVideoFrame CombMask::GetFrame(int n, IScriptEnvironment* env)
 {
 	PVideoFrame	src = child->GetFrame(n, env);
-	PVideoFrame	der;
-	if (has_at_least_v8) der = env->NewVideoFrameP(vi, &src); else der = env->NewVideoFrame(vi);
-	int bits = vi.BitsPerComponent();
-	int component = vi.ComponentSize();
+	PVideoFrame	dst = has_at_least_v8 ? env->NewVideoFrameP(vi, &src) : env->NewVideoFrame(vi);
+	const int bits = vi.BitsPerComponent();
 
 	int planes_y[4] = { PLANAR_Y, PLANAR_U, PLANAR_V, PLANAR_A};
-	const int* current_planes = planes_y;
 	int planecount = min(vi.NumComponents(), 3);
-	for (int i = 0; i < planecount; i++)
+	for (int i = 0; i < planecount; ++i)
 	{
-		const int plane = current_planes[i];
+		const int plane = planes_y[i];
+
+		const int src_pitch = src->GetPitch(plane);
+		const int dst_pitch = dst->GetPitch(plane);
+		const int height = src->GetHeight(plane);
+		const int width = src->GetRowSize(plane);
+		const uint8_t* srcp = src->GetReadPtr(plane);
+		uint8_t* dstp = dst->GetWritePtr(plane);
 
 		if (proccesplanes[i] == 3)
-			CM(der, src, plane, bits, component,  Yth1, Yth2, env);
+			CM(dstp, srcp, dst_pitch, src_pitch, height, width, Yth1, Yth2, peak, bits, env);
 		else if (proccesplanes[i] == 2)
-			copy_plane(der, src, plane, env);
+			env->BitBlt(dstp, dst_pitch, srcp, src_pitch, width, height);
 	}
 
-	return der;
+	return dst;
 }
 
 AVSValue __cdecl Create_CombMask(AVSValue args, void* user_data, IScriptEnvironment* env)
@@ -212,7 +275,6 @@ AVSValue __cdecl Create_CombMask(AVSValue args, void* user_data, IScriptEnvironm
 		args[3].AsInt(3),
 		args[4].AsInt(1),
 		args[5].AsInt(1),
-		args[6].AsBool(true),
 		env);
 }
 

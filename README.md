@@ -6,7 +6,7 @@ The thresholds work as following: after calculating the combing value, if one is
 
 This is the same filter as the one from MaskTools-v1.5.8 with few changes:
 - chroma could be filtered;
-- Y/YUV(A) 8..16-bit clips are accepted;
+- Y/YUV(A) 8..32-bit clips are accepted;
 - support for v8 interface;
 - removed MMX asm code;
 - registered as MT_NICE_FILTER.
@@ -20,7 +20,7 @@ CombMask(clip, int "thY1", int "thY2", int "y", int "u", int "v", bool "usemmx")
 ## Parameters:
 
 - clip\
-    A clip to process. It must have constant format and it must be Y/YUV(A) 8..16-bit.
+    A clip to process. It must be in YUV planar format.
     
 - thY1\
     Pixels below thY1 are set to 0.\
