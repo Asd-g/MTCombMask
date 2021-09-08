@@ -1,4 +1,4 @@
-# Description
+## Description
 
 This filter produces a mask showing areas that are combed.
 
@@ -11,13 +11,19 @@ This is the same filter as the one from MaskTools-v1.5.8 with few changes:
 - removed MMX asm code;
 - registered as MT_NICE_FILTER.
 
-# Usage
+### Requirements:
+
+- AviSynth 2.60 / AviSynth+ 3.4 or later
+
+- Microsoft VisualC++ Redistributable Package 2022 (can be downloaded from [here](https://github.com/abbodi1406/vcredist/releases))
+
+### Usage:
 
 ```
 CombMask(clip, int "thY1", int "thY2", int "y", int "u", int "v", bool "usemmx")
 ```
 
-## Parameters:
+### Parameters:
 
 - clip\
     A clip to process. It must be in YUV planar format.
